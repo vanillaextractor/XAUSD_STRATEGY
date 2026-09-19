@@ -50,54 +50,60 @@ def optimize_kernel_params(
 ) -> tuple[np.ndarray, float, np.ndarray]:
     """
     Outer loop: Search over (alpha1, delta1, alpha2, delta2) maximizing in-sample R^2.
+    
+    BUG 5 FIX: Uses differential_evolution with proper bounds instead of
+    Nelder-Mead, which was saturating at boundary in 62% of folds.
+    Bounds expanded (alpha up to 10, delta up to 500).
+    
     Returns: best_kernel_params, in_sample_r2, betas
     """
     M = len(y_train)
     
-    # Coarse grid seed points to avoid local minima
-    grid_candidates = [
-        (1.5, 2.0, 0.8, 0.1),
-        (2.0, 5.0, 0.6, 0.05),
-        (1.0, 1.0, 1.0, 1.0),
-        (0.8, 0.5, 0.8, 0.5),
+    # Wider bounds to prevent boundary saturation (BUG 5)
+    bounds = [
+        (0.1, 10.0),   # alpha1
+        (0.05, 500.0),  # delta1
+        (0.1, 10.0),   # alpha2
+        (0.05, 500.0),  # delta2
     ]
-    if init_params is not None:
-        grid_candidates.insert(0, tuple(init_params))
-        
-    best_init = grid_candidates[0]
-    best_init_r2 = -1e9
     
-    for cand in grid_candidates:
-        a1, d1, a2, d2 = cand
-        r1, r2 = compute_r1_r2(returns_train, a1, d1, a2, d2, N=N)
-        sqrt_r2 = np.sqrt(r2)
-        X = np.column_stack((np.ones(M - N), r1[N:], sqrt_r2[N:]))
-        _, r2_score = fit_inner_ols(X, y_train[N:])
-        if r2_score > best_init_r2:
-            best_init_r2 = r2_score
-            best_init = cand
-
     def objective(params):
         a1, d1, a2, d2 = params
-        if a1 < 0.01 or d1 < 0.01 or a2 < 0.01 or d2 < 0.01:
-            return 1e6
-        if a1 > 6.0 or d1 > 200.0 or a2 > 6.0 or d2 > 200.0:
-            return 1e6
         r1, r2 = compute_r1_r2(returns_train, a1, d1, a2, d2, N=N)
         sqrt_r2 = np.sqrt(r2)
         X = np.column_stack((np.ones(M - N), r1[N:], sqrt_r2[N:]))
         _, r2_score = fit_inner_ols(X, y_train[N:])
         return -r2_score
 
-    # Nelder-Mead refinement
-    res = scipy.optimize.minimize(
+    # Use differential_evolution: global optimizer with proper bound handling
+    # seed for reproducibility, polish=True applies L-BFGS-B refinement at the end
+    res = scipy.optimize.differential_evolution(
         objective,
-        list(best_init),
-        method="Nelder-Mead",
-        options={"maxiter": 80, "xatol": 1e-3, "fatol": 1e-4}
+        bounds=bounds,
+        seed=42,
+        maxiter=60,
+        tol=1e-4,
+        polish=True,
+        init="sobol",
+        popsize=10
     )
     
-    opt_params = res.x
+    # If init_params were provided, also evaluate them and keep the best
+    if init_params is not None:
+        init_score = -objective(init_params)
+        de_score = -res.fun
+        if init_score > de_score:
+            # Previous fold's params are better; refine from there
+            res_nm = scipy.optimize.minimize(
+                objective,
+                list(init_params),
+                method="Nelder-Mead",
+                options={"maxiter": 60, "xatol": 1e-3, "fatol": 1e-4}
+            )
+            if -res_nm.fun > de_score:
+                res = res_nm
+    
+    opt_params = np.clip(res.x, [b[0] for b in bounds], [b[1] for b in bounds])
     opt_a1, opt_d1, opt_a2, opt_d2 = opt_params
     
     # Compute final train betas
@@ -160,7 +166,12 @@ def run_walk_forward_validation(
         current_test_start = current_train_end
         current_test_end = current_test_start + test_delta
         
-        train_data = dev_df.loc[current_train_start:current_train_end].dropna(subset=["rv_fwd", "rv_trail"])
+        # BUG 6 FIX: Create a buffer between train and test to prevent
+        # rv_fwd target leakage. The last h bars of train have rv_fwd
+        # targets that look into the test window, so we drop them.
+        gap_buffer = pd.Timedelta(minutes=h * 5)  # h bars * 5 min/bar
+        train_cutoff = current_train_end - gap_buffer
+        train_data = dev_df.loc[current_train_start:train_cutoff].dropna(subset=["rv_fwd", "rv_trail"])
         test_data = dev_df.loc[current_test_start:current_test_end].dropna(subset=["rv_fwd", "rv_trail"])
         
         if len(train_data) < N + 1000 or len(test_data) < 100:

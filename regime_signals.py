@@ -24,11 +24,14 @@ import pandas as pd
 def compute_regime_gate(
     sigma_hat: pd.Series,
     window_days: int = 60,
-    bars_per_day: int = 276,
     method: str = "median"
 ) -> tuple[pd.Series, pd.Series]:
     """
     Computes forward-looking regime gate from sigma_hat.
+    
+    BUG 9 FIX: Uses calendar-based rolling window ('60D') instead of
+    bar-count-based rolling, so the window correctly spans 60 calendar
+    days regardless of bars_per_day assumptions.
     
     threshold:
     - 'median': 50th percentile of rolling window
@@ -38,9 +41,8 @@ def compute_regime_gate(
     - regime: pd.Series of strings ('ranging' or 'expansion')
     - threshold_series: pd.Series of the rolling threshold values
     """
-    roll_window = window_days * bars_per_day
-    # Minimum periods to start estimating (e.g. 5 days of bars)
-    min_p = min(len(sigma_hat), 5 * bars_per_day)
+    roll_window = f"{window_days}D"
+    min_p = 500  # Require ~2 trading days of data minimum
     
     if method == "tercile":
         threshold = sigma_hat.rolling(roll_window, min_periods=min_p).quantile(0.3333)

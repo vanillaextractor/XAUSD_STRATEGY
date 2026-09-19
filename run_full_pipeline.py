@@ -45,6 +45,38 @@ def execute_full_pipeline():
         
     # Deduplicate any fold-boundary timestamps
     oos_df = oos_df[~oos_df.index.duplicated(keep="first")].copy()
+    
+    # BUG 10 FIX: Level-align sigma_hat at fold boundaries to remove
+    # 15-70% jumps caused by different kernel params / betas across folds.
+    # Rescale each fold's sigma_hat to match the trailing mean of the previous fold.
+    if "fold" in oos_df.columns and oos_df["fold"].nunique() > 1:
+        print("Aligning sigma_hat at fold boundaries (BUG 10 fix)...")
+        aligned_sigma = oos_df["sigma_hat"].copy()
+        folds_in_oos = sorted(oos_df["fold"].unique())
+        
+        for i in range(1, len(folds_in_oos)):
+            prev_fold = folds_in_oos[i - 1]
+            curr_fold = folds_in_oos[i]
+            
+            prev_mask = oos_df["fold"] == prev_fold
+            curr_mask = oos_df["fold"] == curr_fold
+            
+            # Use last 100 bars of previous fold as anchor
+            prev_tail = aligned_sigma[prev_mask].iloc[-100:]
+            curr_head = oos_df.loc[curr_mask, "sigma_hat"].iloc[:100]
+            
+            if len(prev_tail) > 10 and len(curr_head) > 10:
+                prev_mean = prev_tail.mean()
+                curr_mean = curr_head.mean()
+                
+                if curr_mean > 0 and prev_mean > 0:
+                    scale_factor = prev_mean / curr_mean
+                    # Only align if the jump is significant (>10%)
+                    if abs(scale_factor - 1.0) > 0.10:
+                        aligned_sigma[curr_mask] = oos_df.loc[curr_mask, "sigma_hat"] * scale_factor
+        
+        oos_df["sigma_hat"] = aligned_sigma
+        print(f"  Aligned {len(folds_in_oos) - 1} fold boundaries.")
         
     # 3. Analyze Baseline Shootout (Go / No-Go Gate)
     print("\n-------------------------------------------------------------------")
@@ -134,13 +166,25 @@ def execute_full_pipeline():
     dev_m1 = df_m1.loc[feature_df_median.index.min():feature_df_median.index.max() + pd.Timedelta(hours=4)]
     
     # Run 1: Median Regime + EDGE Spread Cost
-    bt_edge_median = run_intraday_backtest(feature_df_median, dev_m1, edge_spread, use_edge_cost=True)
+    bt_edge_median = run_intraday_backtest(
+        feature_df_median, dev_m1, edge_spread,
+        use_edge_cost=True, cooldown_bars=24,
+        z_exit_threshold=-0.5, k1_stop=1.5, k2_target=1.0, h=24
+    )
     
     # Run 2: Median Regime + Flat Spread Cost (20 cents)
-    bt_flat_median = run_intraday_backtest(feature_df_median, dev_m1, edge_spread, flat_spread_usd=0.20, use_edge_cost=False)
+    bt_flat_median = run_intraday_backtest(
+        feature_df_median, dev_m1, edge_spread,
+        flat_spread_usd=0.20, use_edge_cost=False, cooldown_bars=24,
+        z_exit_threshold=-0.5, k1_stop=1.5, k2_target=1.0, h=24
+    )
     
     # Run 3: Tercile Regime + EDGE Spread Cost
-    bt_edge_tercile = run_intraday_backtest(feature_df_tercile, dev_m1, edge_spread, use_edge_cost=True)
+    bt_edge_tercile = run_intraday_backtest(
+        feature_df_tercile, dev_m1, edge_spread,
+        use_edge_cost=True, cooldown_bars=24,
+        z_exit_threshold=-0.5, k1_stop=1.5, k2_target=1.0, h=24
+    )
     
     print("\n--- Backtest Results Summary (2019-2024 Walk-Forward) ---")
     runs = [
@@ -158,6 +202,7 @@ def execute_full_pipeline():
             print(f"  Max Drawdown:   ${m['max_drawdown_usd']:,.2f}")
             print(f"  Annual Sharpe:  {m['daily_sharpe']:.2f}")
             print(f"  Mean Duration:  {m['mean_duration_min']:.1f} mins")
+            print(f"  Avg Spread:     ${m.get('avg_spread_usd', 0):.4f}")
             print(f"  Exit Breakdown: {m['exit_reasons']}")
 
     # 7. Quarantined 2025 Out-of-Sample Evaluation
@@ -205,7 +250,11 @@ def execute_full_pipeline():
     )
     
     holdout_m1 = df_m1.loc[holdout_m5.index.min():holdout_m5.index.max() + pd.Timedelta(hours=4)]
-    bt_2025 = run_intraday_backtest(feature_df_2025, holdout_m1, edge_spread, use_edge_cost=True)
+    bt_2025 = run_intraday_backtest(
+        feature_df_2025, holdout_m1, edge_spread,
+        use_edge_cost=True, cooldown_bars=24,
+        z_exit_threshold=-0.5, k1_stop=1.5, k2_target=1.0, h=24
+    )
     m_2025 = bt_2025["metrics"]
     if m_2025:
         print("\n[2025 Quarantined Holdout Results]")
@@ -216,6 +265,7 @@ def execute_full_pipeline():
         print(f"  Max Drawdown:   ${m_2025['max_drawdown_usd']:,.2f}")
         print(f"  Annual Sharpe:  {m_2025['daily_sharpe']:.2f}")
         print(f"  Mean Duration:  {m_2025['mean_duration_min']:.1f} mins")
+        print(f"  Avg Spread:     ${m_2025.get('avg_spread_usd', 0):.4f}")
         print(f"  Exit Breakdown: {m_2025['exit_reasons']}")
         
     print("\n===================================================================")
