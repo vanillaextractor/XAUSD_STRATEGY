@@ -46,37 +46,9 @@ def execute_full_pipeline():
     # Deduplicate any fold-boundary timestamps
     oos_df = oos_df[~oos_df.index.duplicated(keep="first")].copy()
     
-    # BUG 10 FIX: Level-align sigma_hat at fold boundaries to remove
-    # 15-70% jumps caused by different kernel params / betas across folds.
-    # Rescale each fold's sigma_hat to match the trailing mean of the previous fold.
-    if "fold" in oos_df.columns and oos_df["fold"].nunique() > 1:
-        print("Aligning sigma_hat at fold boundaries (BUG 10 fix)...")
-        aligned_sigma = oos_df["sigma_hat"].copy()
-        folds_in_oos = sorted(oos_df["fold"].unique())
-        
-        for i in range(1, len(folds_in_oos)):
-            prev_fold = folds_in_oos[i - 1]
-            curr_fold = folds_in_oos[i]
-            
-            prev_mask = oos_df["fold"] == prev_fold
-            curr_mask = oos_df["fold"] == curr_fold
-            
-            # Use last 100 bars of previous fold as anchor
-            prev_tail = aligned_sigma[prev_mask].iloc[-100:]
-            curr_head = oos_df.loc[curr_mask, "sigma_hat"].iloc[:100]
-            
-            if len(prev_tail) > 10 and len(curr_head) > 10:
-                prev_mean = prev_tail.mean()
-                curr_mean = curr_head.mean()
-                
-                if curr_mean > 0 and prev_mean > 0:
-                    scale_factor = prev_mean / curr_mean
-                    # Only align if the jump is significant (>10%)
-                    if abs(scale_factor - 1.0) > 0.10:
-                        aligned_sigma[curr_mask] = oos_df.loc[curr_mask, "sigma_hat"] * scale_factor
-        
-        oos_df["sigma_hat"] = aligned_sigma
-        print(f"  Aligned {len(folds_in_oos) - 1} fold boundaries.")
+    # Ensure sigma_hat is clean and positive (raw out-of-sample forecasts from walk-forward folds)
+    oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=1e-5)
+    print(f"OOS Sigma_hat: Mean={oos_df['sigma_hat'].mean()*10000:.2f} bps, Median={oos_df['sigma_hat'].median()*10000:.2f} bps")
         
     # 3. Analyze Baseline Shootout (Go / No-Go Gate)
     print("\n-------------------------------------------------------------------")
@@ -165,32 +137,71 @@ def execute_full_pipeline():
     print("-------------------------------------------------------------------")
     dev_m1 = df_m1.loc[feature_df_median.index.min():feature_df_median.index.max() + pd.Timedelta(hours=4)]
     
-    # Run 1: Median Regime + EDGE Spread Cost
-    bt_edge_median = run_intraday_backtest(
+    # Feature DF with Directional Beta1 Tilt
+    feature_df_tilt = generate_feature_dataframe(
+        dev_m5,
+        sigma_hat=oos_df["sigma_hat"],
+        beta1_sign=oos_df["beta1_sign"],
+        r1=oos_df["r1"],
+        h=24,
+        z_window=30,
+        z_threshold=2.0,
+        k1_stop=1.5,
+        k2_target=1.0,
+        regime_method="median",
+        apply_beta1_tilt=True
+    )
+
+    # Run 1: Median Regime + EDGE Spread + z=0 Exit (Original Spec Baseline)
+    bt_edge_z0 = run_intraday_backtest(
+        feature_df_median, dev_m1, edge_spread,
+        use_edge_cost=True, cooldown_bars=24,
+        z_exit_threshold=0.0, k1_stop=1.5, k2_target=1.0, h=24
+    )
+    
+    # Run 2: Median Regime + EDGE Spread + Trailing z=-0.5 Exit
+    bt_edge_zneg05 = run_intraday_backtest(
         feature_df_median, dev_m1, edge_spread,
         use_edge_cost=True, cooldown_bars=24,
         z_exit_threshold=-0.5, k1_stop=1.5, k2_target=1.0, h=24
     )
-    
-    # Run 2: Median Regime + Flat Spread Cost (20 cents)
+
+    # Run 3: Median Regime + Flat Spread Cost (20 cents) + z=0 Exit
     bt_flat_median = run_intraday_backtest(
         feature_df_median, dev_m1, edge_spread,
         flat_spread_usd=0.20, use_edge_cost=False, cooldown_bars=24,
-        z_exit_threshold=-0.5, k1_stop=1.5, k2_target=1.0, h=24
+        z_exit_threshold=0.0, k1_stop=1.5, k2_target=1.0, h=24
     )
     
-    # Run 3: Tercile Regime + EDGE Spread Cost
+    # Run 4: Tercile Regime + EDGE Spread Cost
     bt_edge_tercile = run_intraday_backtest(
         feature_df_tercile, dev_m1, edge_spread,
         use_edge_cost=True, cooldown_bars=24,
-        z_exit_threshold=-0.5, k1_stop=1.5, k2_target=1.0, h=24
+        z_exit_threshold=0.0, k1_stop=1.5, k2_target=1.0, h=24
+    )
+
+    # Run 5: Pure PDV Stop/Target/Time-Stop (No z-exit premature cutting)
+    bt_edge_pure_pdv = run_intraday_backtest(
+        feature_df_median, dev_m1, edge_spread,
+        use_edge_cost=True, cooldown_bars=24,
+        z_exit_threshold=None, k1_stop=1.5, k2_target=1.0, h=24
+    )
+
+    # Run 6: Pure PDV + Directional Beta1 Tilt
+    bt_edge_tilt_pdv = run_intraday_backtest(
+        feature_df_tilt, dev_m1, edge_spread,
+        use_edge_cost=True, cooldown_bars=24,
+        z_exit_threshold=None, k1_stop=1.5, k2_target=1.0, h=24
     )
     
     print("\n--- Backtest Results Summary (2019-2024 Walk-Forward) ---")
     runs = [
-        ("Median Gate + EDGE Spread", bt_edge_median["metrics"]),
-        ("Median Gate + Flat 20¢ Spread", bt_flat_median["metrics"]),
-        ("Tercile Gate + EDGE Spread", bt_edge_tercile["metrics"])
+        ("Median Gate + EDGE Spread (z=0 exit)", bt_edge_z0["metrics"]),
+        ("Median Gate + EDGE Spread (trailing z=-0.5)", bt_edge_zneg05["metrics"]),
+        ("Median Gate + Flat 20¢ Spread (z=0 exit)", bt_flat_median["metrics"]),
+        ("Tercile Gate + EDGE Spread (z=0 exit)", bt_edge_tercile["metrics"]),
+        ("Pure PDV Stops/Targets (z_exit disabled)", bt_edge_pure_pdv["metrics"]),
+        ("Pure PDV + Directional Beta1 Tilt", bt_edge_tilt_pdv["metrics"])
     ]
     for name, m in runs:
         if m:
@@ -234,7 +245,7 @@ def execute_full_pipeline():
     
     X_2025 = np.column_stack((np.ones(len(holdout_m5)), r1_2025, np.sqrt(r2_2025)))
     betas_frozen = np.array([last_fold["beta0"], last_fold["beta1"], last_fold["beta2"]])
-    sigma_hat_2025 = pd.Series(X_2025 @ betas_frozen, index=holdout_m5.index)
+    sigma_hat_2025 = pd.Series(X_2025 @ betas_frozen, index=holdout_m5.index).clip(lower=1e-5)
     
     feature_df_2025 = generate_feature_dataframe(
         holdout_m5,
@@ -248,25 +259,46 @@ def execute_full_pipeline():
         k2_target=1.0,
         regime_method="median"
     )
+
+    feature_df_2025_tilt = generate_feature_dataframe(
+        holdout_m5,
+        sigma_hat=sigma_hat_2025,
+        beta1_sign=pd.Series(int(np.sign(last_fold["beta1"])), index=holdout_m5.index),
+        r1=pd.Series(r1_2025, index=holdout_m5.index),
+        h=24,
+        z_window=30,
+        z_threshold=2.0,
+        k1_stop=1.5,
+        k2_target=1.0,
+        regime_method="median",
+        apply_beta1_tilt=True
+    )
     
     holdout_m1 = df_m1.loc[holdout_m5.index.min():holdout_m5.index.max() + pd.Timedelta(hours=4)]
-    bt_2025 = run_intraday_backtest(
+    bt_2025_z0 = run_intraday_backtest(
         feature_df_2025, holdout_m1, edge_spread,
         use_edge_cost=True, cooldown_bars=24,
-        z_exit_threshold=-0.5, k1_stop=1.5, k2_target=1.0, h=24
+        z_exit_threshold=0.0, k1_stop=1.5, k2_target=1.0, h=24
     )
-    m_2025 = bt_2025["metrics"]
-    if m_2025:
-        print("\n[2025 Quarantined Holdout Results]")
-        print(f"  Total Trades:   {m_2025['total_trades']}")
-        print(f"  Win Rate:       {m_2025['win_rate']*100:.2f}%")
-        print(f"  Total PnL:      ${m_2025['total_pnl_usd']:,.2f}")
-        print(f"  Profit Factor:  {m_2025['profit_factor']:.2f}")
-        print(f"  Max Drawdown:   ${m_2025['max_drawdown_usd']:,.2f}")
-        print(f"  Annual Sharpe:  {m_2025['daily_sharpe']:.2f}")
-        print(f"  Mean Duration:  {m_2025['mean_duration_min']:.1f} mins")
-        print(f"  Avg Spread:     ${m_2025.get('avg_spread_usd', 0):.4f}")
-        print(f"  Exit Breakdown: {m_2025['exit_reasons']}")
+    bt_2025_pdv = run_intraday_backtest(
+        feature_df_2025_tilt, holdout_m1, edge_spread,
+        use_edge_cost=True, cooldown_bars=24,
+        z_exit_threshold=None, k1_stop=1.5, k2_target=1.0, h=24
+    )
+    
+    for name_h, res_h in [("2025 Holdout (z=0 exit)", bt_2025_z0), ("2025 Holdout (Pure PDV + Tilt)", bt_2025_pdv)]:
+        m_2025 = res_h["metrics"]
+        if m_2025:
+            print(f"\n[{name_h}]")
+            print(f"  Total Trades:   {m_2025['total_trades']}")
+            print(f"  Win Rate:       {m_2025['win_rate']*100:.2f}%")
+            print(f"  Total PnL:      ${m_2025['total_pnl_usd']:,.2f}")
+            print(f"  Profit Factor:  {m_2025['profit_factor']:.2f}")
+            print(f"  Max Drawdown:   ${m_2025['max_drawdown_usd']:,.2f}")
+            print(f"  Annual Sharpe:  {m_2025['daily_sharpe']:.2f}")
+            print(f"  Mean Duration:  {m_2025['mean_duration_min']:.1f} mins")
+            print(f"  Avg Spread:     ${m_2025.get('avg_spread_usd', 0):.4f}")
+            print(f"  Exit Breakdown: {m_2025['exit_reasons']}")
         
     print("\n===================================================================")
     print("                  PIPELINE EXECUTION COMPLETE                      ")
