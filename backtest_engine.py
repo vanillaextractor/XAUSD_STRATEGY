@@ -217,11 +217,11 @@ def run_intraday_backtest(
                 exit_reason = "time_stop"
                 exit_found = True
 
-            # 4. BUG 1 FIX: Trailing z-score exit (NOT z=0, use threshold)
+            # 4. BUG 1 FIX: Trailing z-score exit (optional, can be disabled with None)
             #    Only check on 5-minute boundaries.
             #    For LONG: exit when z reverts past z_exit_threshold (e.g., -0.5 → gave room to run)
             #    For SHORT: exit when z drops past -z_exit_threshold (e.g., +0.5)
-            elif m1_bar_time in z_map:
+            elif z_exit_threshold is not None and m1_bar_time in z_map:
                 curr_z = z_map[m1_bar_time]
                 if not np.isnan(curr_z):
                     if sig == 1 and curr_z >= z_exit_threshold:
