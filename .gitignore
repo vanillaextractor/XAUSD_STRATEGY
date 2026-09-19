@@ -1,0 +1,23 @@
+# Data and Parquet files
+*.csv
+*.parquet
+*.feather
+*.h5
+*.pkl
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Virtual environments
+venv/
+.venv/
+env/
