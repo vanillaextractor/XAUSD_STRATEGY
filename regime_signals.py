@@ -19,6 +19,7 @@ Implements:
 
 import numpy as np
 import pandas as pd
+from constants import SIGMA_HAT_FLOOR
 
 
 def compute_regime_gate(
@@ -106,11 +107,9 @@ def generate_feature_dataframe(
     
     # 3. Price volatility scale: Delta_P = sigma_hat * Close
     # Note: sigma_hat is already an h-bar cumulative volatility forecast, so no sqrt(h)
-    sigma_hat_clean = np.maximum(sigma_hat, 5e-4)
-    delta_p = sigma_hat_clean * df_bars["Close"]
-    # Floor delta_p so stop distance cannot sit inside typical spread (~0.20 USD)
-    min_delta_p = 0.40 / max(k1_stop, 1e-6)
-    delta_p = np.maximum(delta_p, min_delta_p)
+    # Floor sigma_hat for stop/target sizing only (not for regime gate above)
+    sigma_hat_sized = np.maximum(sigma_hat, SIGMA_HAT_FLOOR)
+    delta_p = sigma_hat_sized * df_bars["Close"]
     df_out["delta_p"] = delta_p
     
     # 4. Signal generation
@@ -134,7 +133,9 @@ def generate_feature_dataframe(
     signal[short_condition] = -1
     df_out["signal"] = signal
     
-    # 5. Stop and Target prices
+    # 5. Indicative stop and target prices (based on signal-bar Close).
+    #    NOTE: backtest_engine.py recomputes these from the actual fill price
+    #    with a spread-adaptive floor, so these columns are for analysis only.
     stop_price = np.full(len(df_out), np.nan)
     target_price = np.full(len(df_out), np.nan)
     
