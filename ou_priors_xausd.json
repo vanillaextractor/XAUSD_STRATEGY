@@ -1,0 +1,20 @@
+{
+  "expansion\u2192ranging": {
+    "theta_median": 0.2746,
+    "half_life_median_bars": 2.52,
+    "vol_ratio_median": 0.9587,
+    "n_transitions": 13651,
+    "n_valid_thetas": 4310,
+    "n_valid_vol_ratios": 13600,
+    "fallback_used": false
+  },
+  "ranging\u2192expansion": {
+    "theta_median": 0.3698,
+    "half_life_median_bars": 1.87,
+    "vol_ratio_median": 1.0788,
+    "n_transitions": 13650,
+    "n_valid_thetas": 4834,
+    "n_valid_vol_ratios": 13589,
+    "fallback_used": false
+  }
+}
