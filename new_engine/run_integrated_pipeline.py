@@ -28,6 +28,7 @@ from calibrate_ou_transitions import run_transition_calibration
 from regime_signals import generate_feature_dataframe
 from backtest_engine import compute_edge_spread, run_intraday_backtest
 from pdv_features import compute_r1_r2
+from constants import SIGMA_HAT_FLOOR
 
 ARTIFACT_DIR = "/Users/pulkitchauhan/.gemini/antigravity-ide/brain/2730d759-fd1c-469d-96a1-a36f3e8dab3c"
 
@@ -61,7 +62,7 @@ def run_integrated_pipeline():
     oos_df = pd.read_parquet(oos_parquet)
     folds_df = pd.read_parquet(folds_parquet)
     oos_df = oos_df[~oos_df.index.duplicated(keep="first")].copy()
-    oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=5e-4)
+    oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=SIGMA_HAT_FLOOR)
     print(f"  Loaded {len(oos_df):,} out-of-sample predictions across {len(folds_df)} folds.")
 
     # 4. Stage 3: Per-Transition OU Prior Calibration (train_ou_priors.py framework)
@@ -175,7 +176,7 @@ def run_integrated_pipeline():
 
     X_2025 = np.column_stack((np.ones(len(holdout_m5)), r1_2025, np.sqrt(r2_2025)))
     betas_frozen = np.array([last_fold["beta0"], last_fold["beta1"], last_fold["beta2"]])
-    sigma_hat_2025 = pd.Series(X_2025 @ betas_frozen, index=holdout_m5.index).clip(lower=5e-4)
+    sigma_hat_2025 = pd.Series(X_2025 @ betas_frozen, index=holdout_m5.index).clip(lower=SIGMA_HAT_FLOOR)
 
     feat_2025 = generate_feature_dataframe(
         holdout_m5,

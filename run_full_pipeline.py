@@ -19,6 +19,7 @@ from pdv_features import compute_forward_rv, compute_trailing_rv, compute_r1_r2
 from calibrate_pdv import run_walk_forward_validation, optimize_kernel_params, fit_inner_ols
 from regime_signals import generate_feature_dataframe
 from backtest_engine import compute_edge_spread, run_intraday_backtest
+from constants import SIGMA_HAT_FLOOR
 
 
 def execute_full_pipeline():
@@ -47,7 +48,7 @@ def execute_full_pipeline():
     oos_df = oos_df[~oos_df.index.duplicated(keep="first")].copy()
     
     # Ensure sigma_hat is clean and floored above spread noise (minimum ~0.05% 24-bar vol)
-    oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=5e-4)
+    oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=SIGMA_HAT_FLOOR)
     print(f"OOS Sigma_hat: Mean={oos_df['sigma_hat'].mean()*10000:.2f} bps, Median={oos_df['sigma_hat'].median()*10000:.2f} bps")
         
     # 3. Analyze Baseline Shootout (Go / No-Go Gate)
@@ -245,7 +246,7 @@ def execute_full_pipeline():
     
     X_2025 = np.column_stack((np.ones(len(holdout_m5)), r1_2025, np.sqrt(r2_2025)))
     betas_frozen = np.array([last_fold["beta0"], last_fold["beta1"], last_fold["beta2"]])
-    sigma_hat_2025 = pd.Series(X_2025 @ betas_frozen, index=holdout_m5.index).clip(lower=5e-4)
+    sigma_hat_2025 = pd.Series(X_2025 @ betas_frozen, index=holdout_m5.index).clip(lower=SIGMA_HAT_FLOOR)
     
     feature_df_2025 = generate_feature_dataframe(
         holdout_m5,

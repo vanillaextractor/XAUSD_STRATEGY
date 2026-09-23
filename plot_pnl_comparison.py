@@ -8,12 +8,13 @@ import pandas as pd
 import numpy as np
 from regime_signals import generate_feature_dataframe
 from backtest_engine import compute_edge_spread, run_intraday_backtest
+from constants import SIGMA_HAT_FLOOR
 
 ARTIFACT_DIR = "/Users/pulkitchauhan/.gemini/antigravity-ide/brain/2730d759-fd1c-469d-96a1-a36f3e8dab3c"
 
 oos_df = pd.read_parquet("walk_forward_oos_predictions.parquet")
 oos_df = oos_df[~oos_df.index.duplicated(keep="first")].copy()
-oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=5e-4)
+oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=SIGMA_HAT_FLOOR)
 df_m1 = pd.read_parquet("xauusd_m1_clean.parquet")
 df_m5 = pd.read_parquet("xauusd_m5_clean.parquet")
 

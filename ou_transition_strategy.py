@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 from regime_signals import generate_feature_dataframe
 from backtest_engine import compute_edge_spread, run_intraday_backtest
 from pdv_features import compute_r1_r2
+from constants import SIGMA_HAT_FLOOR
 
 ARTIFACT_DIR = "/Users/pulkitchauhan/.gemini/antigravity-ide/brain/2730d759-fd1c-469d-96a1-a36f3e8dab3c"
 
@@ -85,7 +86,7 @@ def run_ou_transition_pipeline():
     folds_df = pd.read_parquet("walk_forward_folds.parquet")
 
     oos_df = oos_df[~oos_df.index.duplicated(keep="first")].copy()
-    oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=5e-4)
+    oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=SIGMA_HAT_FLOOR)
 
     edge_spread = compute_edge_spread(df_m5, rolling_window=288)
 
@@ -190,7 +191,7 @@ def run_ou_transition_pipeline():
 
     X_2025 = np.column_stack((np.ones(len(holdout_m5)), r1_2025, np.sqrt(r2_2025)))
     betas_frozen = np.array([last_fold["beta0"], last_fold["beta1"], last_fold["beta2"]])
-    sigma_hat_2025 = pd.Series(X_2025 @ betas_frozen, index=holdout_m5.index).clip(lower=5e-4)
+    sigma_hat_2025 = pd.Series(X_2025 @ betas_frozen, index=holdout_m5.index).clip(lower=SIGMA_HAT_FLOOR)
 
     feat_2025 = generate_feature_dataframe(
         holdout_m5,
