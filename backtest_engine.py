@@ -99,8 +99,8 @@ def run_intraday_backtest(
     z_map = df_features["z_score"].to_dict()
     delta_p_map = df_features["delta_p"].to_dict()
 
-    # BUG 3 FIX: Proper position tracking state
-    in_position = False
+    # State tracking: enforce single active position and cooldown
+    last_exit_time = None
     last_entry_bar_idx = -cooldown_bars - 1  # Allow first signal immediately
 
     # Build positional index map for cooldown checking
@@ -109,11 +109,17 @@ def run_intraday_backtest(
     signal_times = signals.index
 
     for sig_t in signal_times:
-        # BUG 3 FIX: Skip if already in a position
+        # Entry occurs at next 1-minute bar after the 5-minute signal bar closes
+        entry_time_m1 = sig_t + pd.Timedelta(minutes=5)
+        if entry_time_m1 not in m1_time_map:
+            continue
+
+        # Position tracking: Cannot open new position if previous trade has not exited
+        in_position = (last_exit_time is not None and (sig_t < last_exit_time or entry_time_m1 <= last_exit_time))
         if in_position:
             continue
 
-        # BUG 2 FIX: Cooldown — skip if too close to last entry
+        # Cooldown: Skip if too close to last entry
         sig_bar_idx = feat_idx_map.get(sig_t, -1)
         if sig_bar_idx < 0:
             continue
@@ -124,11 +130,6 @@ def run_intraday_backtest(
         if isinstance(row, pd.DataFrame):
             row = row.iloc[0]
         sig = int(row["signal"])
-
-        # Entry occurs at next 1-minute bar after the 5-minute signal bar closes
-        entry_time_m1 = sig_t + pd.Timedelta(minutes=5)
-        if entry_time_m1 not in m1_time_map:
-            continue
 
         entry_idx = m1_time_map[entry_time_m1]
         raw_entry_open = m1_opens[entry_idx]
@@ -147,9 +148,15 @@ def run_intraday_backtest(
         else:  # Short
             entry_price = raw_entry_open - half_spread
 
-        # BUG 4 FIX: Compute stop/target from ACTUAL FILL PRICE, not signal bar close
-        sigma_hat_val = row["sigma_hat"]
-        delta_p_entry = sigma_hat_val * entry_price * np.sqrt(h)
+        # Compute stop/target from ACTUAL FILL PRICE
+        # Note: sigma_hat is already an h-bar cumulative volatility forecast, so no sqrt(h)
+        sigma_hat_val = max(float(row["sigma_hat"]), 5e-4)
+        delta_p_entry = sigma_hat_val * entry_price
+
+        # Enforce minimum stop distance: at least 2x the spread cost so stop never sits inside spread
+        min_stop_distance = 2.0 * spread_usd
+        if k1_stop * delta_p_entry < min_stop_distance:
+            delta_p_entry = min_stop_distance / max(k1_stop, 1e-6)
 
         if sig == 1:
             stop_price = entry_price - k1_stop * delta_p_entry
@@ -161,8 +168,6 @@ def run_intraday_backtest(
         # Time stop
         time_stop_time = sig_t + pd.Timedelta(minutes=h * 5)
 
-        # BUG 3 FIX: Mark position as open
-        in_position = True
         last_entry_bar_idx = sig_bar_idx
 
         # Simulate forward in 1-minute resolution until exit
@@ -189,7 +194,6 @@ def run_intraday_backtest(
             # --- Exit Priority Order ---
             # 1. Stop Loss Check
             if sig == 1 and bar_low <= stop_price:
-                # BUG 7 FIX: Resting order fill at stop_price, not bar_low
                 exit_price = stop_price - exit_half_spread
                 exit_reason = "stop_loss"
                 exit_found = True
@@ -217,10 +221,7 @@ def run_intraday_backtest(
                 exit_reason = "time_stop"
                 exit_found = True
 
-            # 4. BUG 1 FIX: Trailing z-score exit (optional, can be disabled with None)
-            #    Only check on 5-minute boundaries.
-            #    For LONG: exit when z reverts past z_exit_threshold (e.g., -0.5 → gave room to run)
-            #    For SHORT: exit when z drops past -z_exit_threshold (e.g., +0.5)
+            # 4. Trailing z-score exit (optional, can be disabled with None)
             elif z_exit_threshold is not None and m1_bar_time in z_map:
                 curr_z = z_map[m1_bar_time]
                 if not np.isnan(curr_z):
@@ -257,15 +258,41 @@ def run_intraday_backtest(
                     "spread_usd": spread_usd
                 })
 
-                # BUG 3 FIX: Mark position as closed
-                in_position = False
+                last_exit_time = m1_bar_time
                 break
 
             curr_m1_idx += 1
 
-        # If we exhausted bars without finding an exit, force close
-        if in_position and not exit_found:
-            in_position = False
+        # If we exhausted bars without finding an exit (e.g. data ends), force close
+        if not exit_found and curr_m1_idx > entry_idx:
+            exit_bar_idx = min(curr_m1_idx - 1, len(df_m1) - 1)
+            exit_m1_time = m1_index[exit_bar_idx]
+            exit_close = m1_closes[exit_bar_idx]
+            exit_half_spread = 0.5 * flat_spread_usd
+            exit_price = (exit_close - exit_half_spread) if sig == 1 else (exit_close + exit_half_spread)
+            pnl_usd = (exit_price - entry_price) if sig == 1 else (entry_price - exit_price)
+            ret_pct = pnl_usd / entry_price
+            duration_min = (exit_m1_time - entry_time_m1).total_seconds() / 60.0
+
+            trades.append({
+                "signal_time": sig_t,
+                "entry_time": entry_time_m1,
+                "exit_time": exit_m1_time,
+                "side": "LONG" if sig == 1 else "SHORT",
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "stop_price": stop_price,
+                "target_price": target_price,
+                "pnl_usd": pnl_usd,
+                "return_pct": ret_pct,
+                "exit_reason": "end_of_data",
+                "duration_min": duration_min,
+                "sigma_hat": sigma_hat_val,
+                "z_score_entry": row["z_score"],
+                "regime": row["regime"],
+                "spread_usd": spread_usd
+            })
+            last_exit_time = exit_m1_time
 
     trades_df = pd.DataFrame(trades)
 

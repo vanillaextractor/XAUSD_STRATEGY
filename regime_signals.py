@@ -9,7 +9,7 @@ Implements:
    - Z-score: z = (Close - MA) / Std (window 20..50 bars)
    - Entry triggers when regime == "ranging"
 3. Adaptive PDV Stop & Target Sizing:
-   - Delta_P = sigma_hat * Close * sqrt(h)
+   - Delta_P = sigma_hat * Close
    - Long: stop = Close - k1 * Delta_P, target = Close + k2 * Delta_P
    - Short: stop = Close + k1 * Delta_P, target = Close - k2 * Delta_P
    - Time stop: current_bar + h
@@ -104,8 +104,13 @@ def generate_feature_dataframe(
     z_score = compute_zscore(df_bars["Close"], window=z_window)
     df_out["z_score"] = z_score
     
-    # 3. Price volatility scale: Delta_P = sigma_hat * Close * sqrt(h)
-    delta_p = sigma_hat * df_bars["Close"] * np.sqrt(h)
+    # 3. Price volatility scale: Delta_P = sigma_hat * Close
+    # Note: sigma_hat is already an h-bar cumulative volatility forecast, so no sqrt(h)
+    sigma_hat_clean = np.maximum(sigma_hat, 5e-4)
+    delta_p = sigma_hat_clean * df_bars["Close"]
+    # Floor delta_p so stop distance cannot sit inside typical spread (~0.20 USD)
+    min_delta_p = 0.40 / max(k1_stop, 1e-6)
+    delta_p = np.maximum(delta_p, min_delta_p)
     df_out["delta_p"] = delta_p
     
     # 4. Signal generation
