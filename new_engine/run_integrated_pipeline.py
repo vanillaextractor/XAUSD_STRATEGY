@@ -13,10 +13,14 @@ Generates:
 """
 
 import os
+import sys
 import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
+# Ensure root repository is in Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_prep import prepare_and_cache_data
 from fas_features import compute_fas_features
@@ -57,7 +61,7 @@ def run_integrated_pipeline():
     oos_df = pd.read_parquet(oos_parquet)
     folds_df = pd.read_parquet(folds_parquet)
     oos_df = oos_df[~oos_df.index.duplicated(keep="first")].copy()
-    oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=1e-5)
+    oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=5e-4)
     print(f"  Loaded {len(oos_df):,} out-of-sample predictions across {len(folds_df)} folds.")
 
     # 4. Stage 3: Per-Transition OU Prior Calibration (train_ou_priors.py framework)
@@ -171,7 +175,7 @@ def run_integrated_pipeline():
 
     X_2025 = np.column_stack((np.ones(len(holdout_m5)), r1_2025, np.sqrt(r2_2025)))
     betas_frozen = np.array([last_fold["beta0"], last_fold["beta1"], last_fold["beta2"]])
-    sigma_hat_2025 = pd.Series(X_2025 @ betas_frozen, index=holdout_m5.index).clip(lower=1e-5)
+    sigma_hat_2025 = pd.Series(X_2025 @ betas_frozen, index=holdout_m5.index).clip(lower=5e-4)
 
     feat_2025 = generate_feature_dataframe(
         holdout_m5,

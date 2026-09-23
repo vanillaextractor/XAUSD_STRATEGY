@@ -169,7 +169,7 @@ def run_transition_calibration(output_path: str = "ou_priors_xausd.json") -> Dic
     """Load data, run calibration, and save JSON."""
     oos_df = pd.read_parquet("walk_forward_oos_predictions.parquet")
     oos_df = oos_df[~oos_df.index.duplicated(keep="first")].copy()
-    oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=1e-5)
+    oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=5e-4)
     df_m5 = pd.read_parquet("xauusd_m5_clean.parquet")
 
     from regime_signals import generate_feature_dataframe

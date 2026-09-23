@@ -13,7 +13,7 @@ ARTIFACT_DIR = "/Users/pulkitchauhan/.gemini/antigravity-ide/brain/2730d759-fd1c
 
 oos_df = pd.read_parquet("walk_forward_oos_predictions.parquet")
 oos_df = oos_df[~oos_df.index.duplicated(keep="first")].copy()
-oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=1e-5)
+oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=5e-4)
 df_m1 = pd.read_parquet("xauusd_m1_clean.parquet")
 df_m5 = pd.read_parquet("xauusd_m5_clean.parquet")
 

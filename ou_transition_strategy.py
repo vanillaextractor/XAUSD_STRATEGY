@@ -85,7 +85,7 @@ def run_ou_transition_pipeline():
     folds_df = pd.read_parquet("walk_forward_folds.parquet")
 
     oos_df = oos_df[~oos_df.index.duplicated(keep="first")].copy()
-    oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=1e-5)
+    oos_df["sigma_hat"] = oos_df["sigma_hat"].clip(lower=5e-4)
 
     edge_spread = compute_edge_spread(df_m5, rolling_window=288)
 
@@ -190,7 +190,7 @@ def run_ou_transition_pipeline():
 
     X_2025 = np.column_stack((np.ones(len(holdout_m5)), r1_2025, np.sqrt(r2_2025)))
     betas_frozen = np.array([last_fold["beta0"], last_fold["beta1"], last_fold["beta2"]])
-    sigma_hat_2025 = pd.Series(X_2025 @ betas_frozen, index=holdout_m5.index).clip(lower=1e-5)
+    sigma_hat_2025 = pd.Series(X_2025 @ betas_frozen, index=holdout_m5.index).clip(lower=5e-4)
 
     feat_2025 = generate_feature_dataframe(
         holdout_m5,
