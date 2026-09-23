@@ -14,6 +14,7 @@ FIXED BUGS:
 import numpy as np
 import pandas as pd
 import bidask
+from constants import SIGMA_HAT_FLOOR
 
 
 def compute_edge_spread(
@@ -95,9 +96,7 @@ def run_intraday_backtest(
     # Map m1 timestamps to integer index for O(1) lookup
     m1_time_map = {t: idx for idx, t in enumerate(m1_index)}
 
-    # Precompute z_score and delta_p maps for O(1) lookups
     z_map = df_features["z_score"].to_dict()
-    delta_p_map = df_features["delta_p"].to_dict()
 
     # State tracking: enforce single active position and cooldown
     last_exit_time = None
@@ -150,7 +149,7 @@ def run_intraday_backtest(
 
         # Compute stop/target from ACTUAL FILL PRICE
         # Note: sigma_hat is already an h-bar cumulative volatility forecast, so no sqrt(h)
-        sigma_hat_val = max(float(row["sigma_hat"]), 5e-4)
+        sigma_hat_val = max(float(row["sigma_hat"]), SIGMA_HAT_FLOOR)
         delta_p_entry = sigma_hat_val * entry_price
 
         # Enforce minimum stop distance: at least 2x the spread cost so stop never sits inside spread
@@ -268,7 +267,15 @@ def run_intraday_backtest(
             exit_bar_idx = min(curr_m1_idx - 1, len(df_m1) - 1)
             exit_m1_time = m1_index[exit_bar_idx]
             exit_close = m1_closes[exit_bar_idx]
-            exit_half_spread = 0.5 * flat_spread_usd
+            # Use same spread model as all other exits
+            if use_edge_cost:
+                eod_spread_frac = edge_spread.asof(exit_m1_time)
+                if pd.isna(eod_spread_frac):
+                    eod_spread_frac = 1.5e-5
+                eod_spread_usd = eod_spread_frac * exit_close
+            else:
+                eod_spread_usd = flat_spread_usd
+            exit_half_spread = 0.5 * eod_spread_usd
             exit_price = (exit_close - exit_half_spread) if sig == 1 else (exit_close + exit_half_spread)
             pnl_usd = (exit_price - entry_price) if sig == 1 else (entry_price - exit_price)
             ret_pct = pnl_usd / entry_price
@@ -290,7 +297,7 @@ def run_intraday_backtest(
                 "sigma_hat": sigma_hat_val,
                 "z_score_entry": row["z_score"],
                 "regime": row["regime"],
-                "spread_usd": spread_usd
+                "spread_usd": eod_spread_usd
             })
             last_exit_time = exit_m1_time
 
